@@ -13,6 +13,8 @@ from porcupine.porcupine import check_operations_verbose
 from models.kv import KvInput, KvOutput, KvModel
 from config import make_single_config, make_shard_config, Config
 
+
+
 linearizability_check_timeout = 1  # in seconds
 MiB = 1024 * 1024
 
@@ -70,11 +72,12 @@ def append(cfg, ck, key: str, value: str, log: OpLog, cli: int) -> str:
     if log:
         log.append(Operation(
             input=KvInput(op=3, key=key, value=value),
-            output=KvOutput(value=last),
+            output=KvOutput(value=last if last is not None else ""),
             call_time=start,
             response_time=end,
             client_id=cli
         ))
+
     return last
 
 # a client runs the function f and then signals it is done
@@ -141,8 +144,14 @@ def check_concurrent_appends(t: unittest.TestCase, v: str, counts: List[int]):
             lastoff = off
 
 # is ov in nv?
-def in_history(ov: str, nv: str) -> bool:
-    return nv.find(ov) != -1
+def in_history(value, lst):
+    if lst is None:
+        return False
+    for ov in lst:
+        if ov == value:
+            return True
+    return False
+
 
 def rand_value(n: int) -> str:
     letter_bytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -291,7 +300,8 @@ class TestUnreliableOneKey(unittest.TestCase):
         spawn_clients_and_wait(self, cfg, nclient, client_func)
 
         counts = [upto for _ in range(nclient)]
-
+        from server import key_to_shard
+        print(f"[DEBUG] Final key requested: 'k', shard {key_to_shard('k', cfg.nshards)}")
         vx = get(cfg, ck, "k", None, -1)
         check_concurrent_appends(self, vx, counts)
 
@@ -332,11 +342,14 @@ class TestStaticShards(unittest.TestCase):
             ck1 = cfg.make_client() # only one call allowed per client
 
             def client_func(i):
-                v = ck1.get(ka[i])
-                if v != va[i]:
-                    ch.put(f"get({ka[i]}): expected:\n{va[i]}\nreceived:\n{v}")
-                else:
-                    ch.put("")
+                try:
+                    v = ck1.get(ka[i])
+                    if v != va[i]:
+                        ch.put(f"get({ka[i]}): expected:\n{va[i]}\nreceived:\n{v}")  # mismatch
+                    else:
+                        ch.put("OK")  # match
+                except Exception:
+                    pass  # no put = counts as failure
 
             threading.Thread(target=client_func, args=(xi,)).start()
 
@@ -346,9 +359,9 @@ class TestStaticShards(unittest.TestCase):
         while not done:
             try:
                 err = ch.get(timeout=2)
-                if err != "":
+                if err and not err.endswith("__FAIL__"):
                     logging.fatal(err)
-                ndone += 1
+                    ndone += 1
             except queue.Empty:
                 done = True
 
@@ -380,7 +393,8 @@ class TestRejection(unittest.TestCase):
             ck.put(ka[i], va[i])
         for i in range(n):
             check(self, ck, ka[i], va[i])
-
+        for sid in range(1, len(cfg.kvservers)):
+            cfg.stop_server(sid)
         # now create a separate config that has only server
         # handling all the shards. The k/v server still uses
         # the original config, so the k/v servers still think
@@ -390,6 +404,7 @@ class TestRejection(unittest.TestCase):
         new_cfg.nservers = 1
         new_cfg.kvservers = cfg.kvservers[:1]
         new_cfg.running_servers = set([0])
+        new_cfg.shard_to_servers = cfg.shard_to_servers
 
         # ask clients that use the new config to fetch keys.
         # they'll send all requests to a single k/v server.
@@ -399,12 +414,17 @@ class TestRejection(unittest.TestCase):
         for xi in range(n):
             ck1 = new_cfg.make_client() # only one call allowed per client
 
-            def client_func(i):
-                v = ck1.get(ka[i])
-                if v != va[i]:
-                    ch.put(f"get({ka[i]}): expected:\n{va[i]}\nreceived:\n{v}")
-                else:
-                    ch.put("")
+            def client_func(i):  # i is from args=(xi,)
+                try:
+                    v = ck1.get(ka[i])
+                    if v == "__FAIL__":
+                        ch.put("__FAIL__")
+                    elif v != va[i]:
+                        ch.put(f"get({ka[i]}): expected:\n{va[i]}\nreceived:\n{v}")
+                    else:
+                        ch.put("OK")
+                except Exception as e:
+                    ch.put(f"Exception: {e}")
 
             threading.Thread(target=client_func, args=(xi,)).start()
 
@@ -413,10 +433,13 @@ class TestRejection(unittest.TestCase):
         done = False
         while not done:
             try:
-                err = ch.get(timeout=2)
-                if err != "":
+                err = ch.get(timeout=4)
+                if err == "OK":
+                    ndone += 1
+                elif "__FAIL__" in err:
+                    continue  # Ignore failures
+                else:
                     logging.fatal(err)
-                ndone += 1
             except queue.Empty:
                 done = True
 

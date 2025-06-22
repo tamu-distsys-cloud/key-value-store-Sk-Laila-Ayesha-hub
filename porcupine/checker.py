@@ -254,9 +254,10 @@ def check_parallel(model: Model, history: List[List[Entry]], compute_info: bool,
             partials = []
             seen = set()
             for v in sub_longest:
-                if tuple(v) not in seen:
+                if v is not None and tuple(v) not in seen:
                     seen.add(tuple(v))
                     partials.append(v)
+
             partial_linearizations.append(partials)
 
         info = LinearizationInfo(history, partial_linearizations)

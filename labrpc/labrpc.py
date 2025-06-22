@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import threading
 import logging
 import random
@@ -6,7 +10,7 @@ import io
 import queue
 from collections import defaultdict
 
-from labgob.labgob import LabEncoder, LabDecoder
+from labgob.labgob import LabEncoder, LabDecoder  # ✅ Only once, after sys.path is set
 
 logging.basicConfig(level=logging.FATAL)
 
@@ -65,6 +69,14 @@ class Network:
         # single thread to handle all ClientEnd.call()s
         threading.Thread(target=self._process_requests, daemon=True).start()
 
+    def is_server_enabled(self, server_id):
+        """Returns True if any end is enabled to this server"""
+        with self.mu:
+            for endname, enabled in self.enabled.items():
+                if self.connections.get(endname) == server_id and enabled:
+                    return True
+            return False
+
     def cleanup(self):
         self.done.set()
 
@@ -101,6 +113,7 @@ class Network:
             isreliable = self.isreliable
             long_reordering = self.longReordering
 
+            print(f"[DEBUG] read_endname_info(): endname={endname}, servername={servername}, server={type(server).__name__ if server else None}")
         return enabled, servername, server, isreliable, long_reordering
 
     def is_server_dead(self, endname, servername, server):
@@ -120,6 +133,7 @@ class Network:
             ech = queue.Queue()
 
             def dispatch():
+                print(f"[DEBUG] Network: dispatching {req.svcMeth} to server {servername}")
                 r = server.dispatch(req)
                 ech.put(r)
 
@@ -172,6 +186,7 @@ class Network:
     def add_server(self, servername, server):
         with self.mu:
             self.servers[servername] = server
+            print(f"[DEBUG] add_server: servername={servername} (type={type(servername)}), all server keys={list(self.servers.keys())}")
 
     def delete_server(self, servername):
         with self.mu:
@@ -207,16 +222,18 @@ class Server:
             self.services[svc.name] = svc
 
     def dispatch(self, req):
+
         with self.mu:
             self.count += 1
 
             dot = req.svcMeth.rindex('.')
             service_name = req.svcMeth[:dot]
             method_name = req.svcMeth[dot + 1:]
-
             service = self.services.get(service_name)
+            print(f"[DEBUG] dispatch(): svcMeth = {req.svcMeth}, split → service={service_name}, method={method_name}")
 
         if service:
+            print(f"[DEBUG] dispatch(): Found service {service_name}, calling method {method_name}")
             return service.dispatch(method_name, req)
         else:
             choices = list(self.services.keys())
@@ -227,29 +244,39 @@ class Server:
         with self.mu:
             return self.count
 
+
+
 class Service:
     def __init__(self, rcvr):
         self.name = type(rcvr).__name__
         self.rcvr = rcvr
         self.methods = {}
-
+        print(f"[HOOK] Registering Service for rcvr={rcvr}, type={type(rcvr)}")
         for method_name in dir(rcvr):
             if method_name.startswith('_'):
                 continue
             method = getattr(rcvr, method_name)
             if callable(method):
+                print(f"[HOOK] Adding method: {method_name} → {method} (type: {type(method)})")
                 self.methods[method_name] = method
+        print(f"[DEBUG] Registered service: {self.name}, methods: {list(self.methods.keys())}")
 
     def dispatch(self, methname, req):
         method = self.methods.get(methname)
         if method:
-            # decode the argument.
-            args = LabDecoder(io.BytesIO(req.args)).decode()
+            # 🛠 Safely decode the argument
+            try:
+                args = LabDecoder(io.BytesIO(req.args)).decode()
+                print(f"[TRACE] Dispatch decoded for method '{methname}': {vars(args)}")
 
-            # call the method
+            except Exception as e:
+                print(f"[FATAL] Failed to decode args for method='{methname}': {e}")
+                return ReplyMsg(False, None)
+
+            # ✅ Call the method
             replyv = method(args)
 
-            # encode the reply
+            # 🔁 Encode the reply
             rb = io.BytesIO()
             LabEncoder(rb).encode(replyv)
             reply = rb.getvalue()
@@ -258,4 +285,15 @@ class Service:
             choices = list(self.methods.keys())
             logging.fatal(f"labrpc.Service.dispatch(): unknown method {methname} in {req.svcMeth}; expecting one of {choices}")
             return ReplyMsg(False, None)
+# ... all class definitions above (e.g., Service, Server, etc.)
 
+if __name__ == "__main__":
+    from server import PutAppendArgs  # or adjust the import path
+    import io
+    from labgob.labgob import LabEncoder, LabDecoder
+    args = PutAppendArgs("k", "v", "Append", "req-123")
+    buf = io.BytesIO()
+    LabEncoder(buf).encode(args)
+
+    decoded = LabDecoder(io.BytesIO(buf.getvalue())).decode()
+    print(vars(decoded))
