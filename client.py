@@ -1,4 +1,9 @@
-# client.py
+# This file was developed with guidance and code suggestions from OpenAI's ChatGPT (https://chat.openai.com)
+# and GitHub Copilot by Microsoft (https://github.com/features/copilot).
+# These tools were used to understand distributed key-value store implementation concepts, debug test failures,
+# and improve retry logic, replication, and linearizability handling.
+# All final implementations were reviewed and tested manually to ensure correctness.
+
 import time
 import threading
 import uuid

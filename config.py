@@ -1,3 +1,6 @@
+# This file was edited with guidance and code suggestions from OpenAI's ChatGPT (https://chat.openai.com)
+# and GitHub Copilot by Microsoft (https://github.com/features/copilot).
+
 import os
 import random
 import math
